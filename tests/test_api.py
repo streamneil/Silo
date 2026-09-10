@@ -103,6 +103,15 @@ def test_console_contains_artifact_markdown_preview_components(tmp_path):
         assert "markdown-body" in html
 
 
+def test_console_markdown_renderer_uses_emphasis_safe_inline_code_tokens(tmp_path):
+    settings = Settings(data_dir=tmp_path)
+    with TestClient(build_app(settings)) as client:
+        html = client.get("/").text
+        assert "SILOINLINECODE${inlineCodes.length}TOKEN" in html
+        assert "SILOINLINECODE(\\d+)TOKEN" in html
+        assert "__INLINE_CODE_${inlineCodes.length}__" not in html
+
+
 def test_api_serves_version_report_and_skill(tmp_path):
     settings = Settings(data_dir=tmp_path)
     app = build_app(settings)
@@ -165,6 +174,5 @@ def test_api_serves_version_report_and_skill(tmp_path):
         skl = client.get(f"/api/versions/{version_id}/skill")
         assert skl.status_code == 200
         assert "name: demo-style" in skl.json()["markdown"]
-
 
 
