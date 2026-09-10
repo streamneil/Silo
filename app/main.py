@@ -69,7 +69,10 @@ def build_app(settings: Settings | None = None, pipeline: Pipeline | None = None
 
     @app.get("/", include_in_schema=False)
     def index() -> FileResponse:
-        return FileResponse(Path(__file__).parent / "templates" / "index.html")
+        return FileResponse(
+            Path(__file__).parent / "templates" / "index.html",
+            headers={"Cache-Control": "no-store, max-age=0"},
+        )
 
     @app.get("/api/health")
     def health() -> dict[str, str]:

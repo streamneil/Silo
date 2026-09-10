@@ -95,7 +95,9 @@ def test_api_lists_and_serves_saved_transcripts(tmp_path):
 def test_console_contains_artifact_markdown_preview_components(tmp_path):
     settings = Settings(data_dir=tmp_path)
     with TestClient(build_app(settings)) as client:
-        html = client.get("/").text
+        response = client.get("/")
+        html = response.text
+        assert response.headers["cache-control"] == "no-store, max-age=0"
         assert "artifact-preview" in html
         assert "artifact-show-preview" in html
         assert "artifact-show-raw" in html
@@ -174,5 +176,4 @@ def test_api_serves_version_report_and_skill(tmp_path):
         skl = client.get(f"/api/versions/{version_id}/skill")
         assert skl.status_code == 200
         assert "name: demo-style" in skl.json()["markdown"]
-
 

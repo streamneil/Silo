@@ -8,11 +8,15 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
+from app.artifact_integrity import (
+    ArtifactIntegrityError,
+    assert_no_unresolved_inline_code_tokens,
+)
 from app.config import Settings
 from app.database import Database
 from app.llm import LLMClient, LLMError
 
-PROMPT_VERSION = "silo-distill-v1"
+PROMPT_VERSION = "silo-distill-v2"
 
 
 @dataclass
@@ -245,7 +249,9 @@ hook 的 text 和 mechanism 各不超过 40 字；不得重复逐字稿。""",
 1. 数据范围与方法；2. 一句话人设；3. 核心议题和价值观；4. 高频开篇钩子；
 5. 论证与叙事结构；6. 语言指纹；7. 情绪和节奏；8. 高赞内容规律；
 9. 可复用创作公式；10. 可能的偏差与不要模仿的表面特征。
-引用示例时只引用分析数据里真实存在的短句，不得虚构原话。只输出 Markdown 正文。""",
+引用示例时只引用分析数据里真实存在的短句，不得虚构原话。
+普通中文概念使用中文引号或加粗，不要使用反引号；反引号只用于真正的代码标识符。
+禁止输出 INLINECODE、INLINE_CODE 或其他内部占位符。只输出 Markdown 正文。""",
                 temperature=0.2,
             )
         )
@@ -268,13 +274,19 @@ description: 使用博主【{nickname}】的认知框架、论证方式和语言
 正文必须包含：适用场景、角色与世界观、选题判断、开篇钩子公式、论证步骤、
 语言指纹、篇幅和节奏、创作工作流、自检清单、负向约束。
 要求模型学习结构和思考方式，不冒充真人，不编造其经历、背书或观点。
-只输出完整 Markdown，不要使用包裹全文的代码围栏。""",
+只输出完整 Markdown，不要使用包裹全文的代码围栏。
+普通中文概念不要使用反引号，禁止输出 INLINECODE、INLINE_CODE 或其他内部占位符。""",
                 temperature=0.2,
             )
         )
         report, skill = await asyncio.gather(report_task, skill_task)
         report = self._strip_outer_fence(report)
         skill = self._strip_outer_fence(skill)
+        try:
+            assert_no_unresolved_inline_code_tokens(report, "分析报告")
+            assert_no_unresolved_inline_code_tokens(skill, "SKILL.md")
+        except ArtifactIntegrityError as exc:
+            raise LLMError(str(exc)) from exc
         if not skill.startswith("---\n"):
             skill = (
                 f"---\nname: {slug}-style\n"

@@ -9,7 +9,9 @@ import zipfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
+from app.artifact_integrity import assert_no_unresolved_inline_code_tokens
 from app.config import Settings
 from app.database import utc_now
 
@@ -52,9 +54,139 @@ def timestamped_transcript(video: dict[str, Any]) -> str:
     return "\n\n".join(lines)
 
 
+def readable_paragraphs(text: str, target_chars: int = 260) -> str:
+    """Turn a transcript into short paragraphs without changing its wording."""
+    normalized = re.sub(r"[ \t]+", " ", str(text or "")).strip()
+    if not normalized:
+        return "（当前作品没有可读文本）"
+    units = [
+        part.strip()
+        for part in re.split(r"(?<=[。！？!?；;])|\n+", normalized)
+        if part.strip()
+    ]
+    paragraphs: list[str] = []
+    current = ""
+    for unit in units:
+        if current and len(current) + len(unit) > target_chars:
+            paragraphs.append(current)
+            current = unit
+        else:
+            current += unit
+    if current:
+        paragraphs.append(current)
+    return "\n\n".join(paragraphs)
+
+
+def readable_transcript(
+    video: dict[str, Any], timezone: str, version_label: str, *, is_new: bool
+) -> str:
+    published = datetime.fromtimestamp(
+        int(video["publish_time"]), tz=ZoneInfo(timezone)
+    )
+    title = str(video.get("title") or "无标题").strip()
+    body = readable_paragraphs(
+        str(video.get("cleaned_transcript") or video.get("raw_transcript") or "")
+    )
+    status = "本版本新增" if is_new else "历史收录"
+    return f"""{title}
+{'=' * min(60, max(12, len(title)))}
+
+版本：{version_label}
+收录状态：{status}
+发布时间：{published.isoformat()}
+作品 ID：{video['aweme_id']}
+点赞：{video.get('like_count', 0)}
+原始链接：{video.get('video_url') or '未记录'}
+
+正文
+----
+
+{body}
+"""
+
+
+def golden_quote(video: dict[str, Any]) -> str:
+    """Select one exact, readable sentence from a transcript without model rewriting."""
+    text = str(video.get("cleaned_transcript") or video.get("raw_transcript") or "")
+    candidates = [
+        part.strip(" \t\r\n\"“”'‘’")
+        for part in re.split(r"(?<=[。！？!?；;])|\n+", text)
+        if 10 <= len(part.strip()) <= 120
+    ]
+    if not candidates:
+        return re.sub(r"\s+", " ", text).strip()[:120] or "（未提取到可读金句）"
+    signals = (
+        "不是",
+        "而是",
+        "本质",
+        "真正",
+        "只有",
+        "一定",
+        "永远",
+        "不要",
+        "千万",
+        "为什么",
+        "你会发现",
+        "意味着",
+        "最大的",
+    )
+
+    def score(item: tuple[int, str]) -> tuple[float, int]:
+        index, sentence = item
+        signal_score = sum(18 for signal in signals if signal in sentence)
+        length_score = max(0, 32 - abs(len(sentence) - 46) * 0.5)
+        return signal_score + length_score - index * 0.05, -index
+
+    return max(enumerate(candidates), key=score)[1]
+
+
+def golden_quotes_text(
+    creator: dict[str, Any],
+    run: dict[str, Any],
+    videos: list[dict[str, Any]],
+    version_label: str,
+    timezone: str,
+) -> str:
+    ordered = sorted(
+        videos,
+        key=lambda video: (
+            video.get("first_seen_run_id") == run["run_id"],
+            int(video.get("like_count") or 0),
+            int(video.get("publish_time") or 0),
+        ),
+        reverse=True,
+    )
+    lines = [
+        f"{creator['nickname']}金句",
+        "=" * 36,
+        "",
+        f"版本：{version_label}",
+        f"内容截止时间：{run['content_cutoff_at']}",
+        f"完整逐字稿：{len(videos)} 条",
+        f"本版本新增：{run.get('new_count', 0)} 条",
+        "说明：每条金句均从本版本阅读稿中逐字抽取，未进行二次改写，可回到作品 ID 核验。",
+        "",
+    ]
+    for index, video in enumerate(ordered, start=1):
+        published = datetime.fromtimestamp(int(video["publish_time"]), tz=ZoneInfo(timezone))
+        new_marker = "【本版本新增】" if video.get("first_seen_run_id") == run["run_id"] else ""
+        lines.extend(
+            [
+                f"{index:03d}. {new_marker}{golden_quote(video)}",
+                f"来源：{video.get('title') or '无标题'}",
+                (
+                    f"日期：{published:%Y-%m-%d} ｜ 作品 ID：{video['aweme_id']} "
+                    f"｜ 点赞：{video.get('like_count', 0)}"
+                ),
+                "",
+            ]
+        )
+    return "\n".join(lines).rstrip() + "\n"
+
+
 def video_markdown(video: dict[str, Any], timezone: str) -> str:
     published = datetime.fromtimestamp(
-        int(video["publish_time"]), tz=__import__("zoneinfo").ZoneInfo(timezone)
+        int(video["publish_time"]), tz=ZoneInfo(timezone)
     )
     title = video.get("title") or "无标题"
     timeline = timestamped_transcript(video)
@@ -117,18 +249,37 @@ class Exporter:
         analyzed_count: int,
         version_label: str,
     ) -> dict[str, Any]:
+        assert_no_unresolved_inline_code_tokens(report, "creator_profile.md")
+        assert_no_unresolved_inline_code_tokens(skill, "SKILL.md")
         version_id = f"ver_{uuid.uuid4().hex[:12]}"
         creator_dir = self.settings.versions_dir / safe_name(creator["creator_id"])
         version_dir = creator_dir / f"{version_label}_{run['run_id']}"
         corpus_dir = version_dir / "corpus"
+        readable_dir = version_dir / "readable_transcripts"
         corpus_dir.mkdir(parents=True, exist_ok=False)
+        readable_dir.mkdir()
 
         completed = [v for v in videos if v.get("transcript_status") == "COMPLETED"]
         exceptions = [v for v in videos if v.get("transcript_status") != "COMPLETED"]
+        readable_files: dict[str, str] = {}
         for video in completed:
             published = datetime.fromtimestamp(int(video["publish_time"]), tz=self.settings.tz)
             item_path = corpus_dir / f"{published:%Y-%m-%d}_{video['aweme_id']}.md"
             item_path.write_text(video_markdown(video, self.settings.timezone), encoding="utf-8")
+            readable_filename = (
+                f"{published:%Y-%m-%d}_{safe_name(video.get('title') or '无标题')}"
+                f"_{video['aweme_id']}.txt"
+            )
+            readable_files[str(video["aweme_id"])] = readable_filename
+            (readable_dir / readable_filename).write_text(
+                readable_transcript(
+                    video,
+                    self.settings.timezone,
+                    version_label,
+                    is_new=video.get("first_seen_run_id") == run["run_id"],
+                ),
+                encoding="utf-8",
+            )
 
         index_path = version_dir / "corpus_index.csv"
         with index_path.open("w", encoding="utf-8-sig", newline="") as handle:
@@ -143,7 +294,9 @@ class Exporter:
                     "分享",
                     "字幕来源",
                     "处理状态",
-                    "文件",
+                    "审计语料文件",
+                    "阅读版逐字稿文件",
+                    "版本收录状态",
                 ]
             )
             for video in videos:
@@ -160,11 +313,32 @@ class Exporter:
                         video.get("transcript_source"),
                         video.get("transcript_status"),
                         filename if video in completed else "",
+                        (
+                            f"readable_transcripts/{readable_files[str(video['aweme_id'])]}"
+                            if video in completed
+                            else ""
+                        ),
+                        (
+                            "本版本新增"
+                            if video.get("first_seen_run_id") == run["run_id"]
+                            else "历史收录"
+                        ),
                     ]
                 )
         skill = self._stamp_skill(skill, version_label, run["content_cutoff_at"])
         (version_dir / "creator_profile.md").write_text(report, encoding="utf-8")
         (version_dir / "SKILL.md").write_text(skill, encoding="utf-8")
+        quotes_filename = f"{safe_name(creator['nickname'])}金句_{version_label}.txt"
+        (version_dir / quotes_filename).write_text(
+            golden_quotes_text(
+                creator,
+                run,
+                completed,
+                version_label,
+                self.settings.timezone,
+            ),
+            encoding="utf-8",
+        )
         timestamps = [int(v["publish_time"]) for v in videos if int(v.get("publish_time") or 0) > 0]
         platform_claimed = int(creator.get("platform_video_count") or 0)
         missing_platform_items = max(0, platform_claimed - len(videos))
@@ -216,9 +390,11 @@ class Exporter:
             ],
             "artifacts": {
                 "corpus": "corpus/",
+                "readable_transcripts": "readable_transcripts/",
                 "index": "corpus_index.csv",
                 "report": "creator_profile.md",
                 "skill": "SKILL.md",
+                "quotes": quotes_filename,
                 "delivery_guide": "商品交付说明.md",
             },
         }
@@ -282,9 +458,11 @@ class Exporter:
 ## 文件清单
 
 - `corpus/`：每条作品一个 Markdown，含元数据、时间轴逐字稿、忠实原始稿和规范化文本。
+- `readable_transcripts/`：每条作品一个独立 TXT 阅读版，去掉技术字段与时间轴并按短段落排版。
 - `corpus_index.csv`：全部作品索引，可用 Excel、Numbers 等软件打开。
 - `creator_profile.md`：基于本版本全部完整文本生成的分析报告。
 - `SKILL.md`：带版本号与语料截止时间的可用创作 Skill。
+- `{manifest["artifacts"]["quotes"]}`：逐篇从真实逐字稿抽取的金句，带版本、本次新增标记与作品 ID。
 - `MANIFEST.md` / `manifest.json`：覆盖率、异常和增量记录，供买家核验。
 
 ## 交付口径

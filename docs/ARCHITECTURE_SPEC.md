@@ -238,16 +238,21 @@ description: 深度模拟博主【{{nickname}}】的语气、文风、思考框�
 ```text
 {version_label}_{run_id}/
 ├── corpus/
-│   └── {publish_date}_{aweme_id}.md  # 每条视频独立完整逐字稿
+│   └── {publish_date}_{aweme_id}.md  # 带时间轴和审计字段的完整逐字稿
+├── readable_transcripts/
+│   └── {publish_date}_{title}_{aweme_id}.txt # 人类阅读版，短段落排版
 ├── corpus_index.csv                  # 全量索引，可直接用 Excel 打开
 ├── creator_profile.md                # 基于本版全量语料生成
 ├── SKILL.md                          # 基于本版全量语料生成
+├── {creator_name}金句_{version}.txt  # 逐篇原文抽取，新增内容有标记
 ├── manifest.json                     # 机器可读的版本和完整性说明
-└── MANIFEST.md                       # 面向交付对象的版本说明
+├── MANIFEST.md                       # 面向交付对象的版本说明
+└── 商品交付说明.md                   # 文件用途与交付口径
 ```
 
-每个视频 Markdown 同时保留“完整原始逐字稿”和“阅读整理稿”。风格分析优先使用
-原始逐字稿，避免在清洗阶段删除口头禅、重复和节奏等语言指纹。
+`corpus/` 中每个视频 Markdown 同时保留“完整原始逐字稿”和“阅读整理稿”；
+`readable_transcripts/` 额外提供去除技术字段和时间轴的短段落 TXT，方便普通读者浏览。
+风格分析优先使用原始逐字稿，避免在清洗阶段删除口头禅、重复和节奏等语言指纹。
 
 ## 8. 生产部署参考
  
@@ -257,4 +262,3 @@ description: 深度模拟博主【{{nickname}}】的语气、文风、思考框�
 - ASR：GPU 上的 FunASR `Paraformer-large` + FSMN-VAD + 标点恢复；
 - LLM：OpenAI 兼容端点（如 llama-server, vLLM, Ollama）；
 - 远程访问：通过安全私有内网或 Tailscale 网络访问。
-
