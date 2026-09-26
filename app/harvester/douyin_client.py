@@ -466,6 +466,13 @@ class DouyinHarvester:
                     "headless page candidates: %s",
                     exc,
                 )
+        if not items and matching_browser_items:
+            browser_ids = [
+                str(aweme_id)
+                for aweme_id in browser_ids
+                if str(aweme_id) in matching_browser_items
+            ]
+            browser_items = matching_browser_items
         unresolved_ids = [
             str(aweme_id)
             for aweme_id in browser_ids

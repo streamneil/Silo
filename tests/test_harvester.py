@@ -138,6 +138,46 @@ async def test_browser_recovery_retries_headed_when_headless_profile_is_blocked(
     assert [item["aweme_id"] for item in recovered] == ["real"]
 
 
+class HeadlessMixedBrowserClient:
+    def __init__(self):
+        self.detail_calls = []
+
+    async def collect_user_post_ids_via_browser(self, *args, **kwargs):
+        return ["real", "recommendation"]
+
+    def pop_browser_post_aweme_items(self):
+        return {"real": {"aweme_id": "real", "author": {"sec_uid": "creator"}}}
+
+    async def get_video_detail(self, aweme_id, suppress_error=False):
+        self.detail_calls.append(aweme_id)
+        return None
+
+
+@pytest.mark.asyncio
+async def test_empty_api_recovery_ignores_unverified_dom_recommendations(monkeypatch):
+    async def no_page_items(*_args, **_kwargs):
+        return {}
+
+    monkeypatch.setattr(
+        DouyinHarvester,
+        "_recover_video_pages_with_browser",
+        staticmethod(no_page_items),
+    )
+    client = HeadlessMixedBrowserClient()
+
+    recovered = await DouyinHarvester._recover_with_browser(
+        client,
+        "creator",
+        [],
+        set(),
+        10,
+        expected_nickname="测试博主",
+    )
+
+    assert [item["aweme_id"] for item in recovered] == ["real"]
+    assert client.detail_calls == []
+
+
 def test_browser_page_data_builds_video_metadata():
     item = DouyinHarvester._browser_page_item(
         "123",
