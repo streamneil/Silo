@@ -1,7 +1,11 @@
+import sys
+import types
+
 import pytest
 
 from app.config import Settings
 from app.harvester import DouyinHarvester
+from app.harvester.douyin_client import HarvestError
 
 
 def test_validate_url_extracts_homepage_from_douyin_share_text():
@@ -87,3 +91,43 @@ async def test_month_recovery_queries_older_history_window(tmp_path):
     assert client.params["time_list_query"] == "1"
     assert client.params["need_time_list"] == "0"
     assert client.params["count"] == 50
+
+
+@pytest.mark.asyncio
+async def test_quick_harvest_rejects_empty_first_page_for_nonempty_creator(
+    tmp_path, monkeypatch
+):
+    class EmptyPostClient:
+        def __init__(self, _cookies):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def get_user_info(self, _sec_uid):
+            return {"nickname": "测试博主", "aweme_count": 58}
+
+        async def get_user_post(self, _sec_uid, _cursor, _count):
+            return {}
+
+    class FakeURLParser:
+        @staticmethod
+        def parse(_url):
+            return {"type": "user", "sec_uid": "creator"}
+
+    monkeypatch.setitem(
+        sys.modules,
+        "core",
+        types.SimpleNamespace(DouyinAPIClient=EmptyPostClient, URLParser=FakeURLParser),
+    )
+    harvester = DouyinHarvester(Settings(data_dir=tmp_path))
+    harvester.save_cookie("ttwid=test; odin_tt=test; passport_csrf_token=test")
+
+    with pytest.raises(HarvestError, match="Cookie"):
+        await harvester.harvest(
+            "https://www.douyin.com/user/creator",
+            max_videos=60,
+        )

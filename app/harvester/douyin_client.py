@@ -200,6 +200,13 @@ class DouyinHarvester:
                     seen_cursors.add(cursor)
                     cursor = next_cursor
 
+                if expected_count > 0 and not items:
+                    raise HarvestError(
+                        "抖音主页可以读取，但作品列表返回为空。"
+                        "登录 Cookie 可能已过期或触发了平台风控；"
+                        "请在已登录的抖音网页版重新获取完整 Cookie，保存后再重试"
+                    )
+
                 if not max_videos and expected_count > len(items) and time_windows:
                     items = await self._recover_older_months(
                         client, sec_uid, items, seen, time_windows, expected_count

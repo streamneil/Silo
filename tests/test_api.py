@@ -105,6 +105,19 @@ def test_console_contains_artifact_markdown_preview_components(tmp_path):
         assert "markdown-body" in html
 
 
+def test_console_explains_cookie_setup_and_reports_refresh_results(tmp_path):
+    settings = Settings(data_dir=tmp_path)
+    with TestClient(build_app(settings)) as client:
+        html = client.get("/").text
+        assert "space-action-notice" in html
+        assert "打开抖音网页版并登录" in html
+        assert "Command + Option + I" in html
+        assert "Request Headers" in html
+        assert "Cookie 属于登录凭证" in html
+        assert "如果提示 Cookie 或平台拒绝请求" in html
+        assert "未发现新增作品" in html
+
+
 def test_console_markdown_renderer_uses_emphasis_safe_inline_code_tokens(tmp_path):
     settings = Settings(data_dir=tmp_path)
     with TestClient(build_app(settings)) as client:
@@ -176,4 +189,3 @@ def test_api_serves_version_report_and_skill(tmp_path):
         skl = client.get(f"/api/versions/{version_id}/skill")
         assert skl.status_code == 200
         assert "name: demo-style" in skl.json()["markdown"]
-
