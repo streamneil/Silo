@@ -114,6 +114,7 @@ def test_console_explains_cookie_setup_and_reports_refresh_results(tmp_path):
         assert "Command + Option + I" in html
         assert "Request Headers" in html
         assert "Cookie 属于登录凭证" in html
+        assert "Cookie 无效" in html
         assert "如果提示 Cookie 或平台拒绝请求" in html
         assert "未发现新增作品" in html
 

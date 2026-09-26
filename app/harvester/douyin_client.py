@@ -17,6 +17,24 @@ logger = logging.getLogger(__name__)
 
 _SHARED_URL_PATTERN = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
 _SHARED_URL_TRAILING_PUNCTUATION = ".,;:!?，。；：！？、)]}）】》」』"
+_COOKIE_ATTRIBUTE_NAMES = {
+    "comment",
+    "domain",
+    "expires",
+    "httponly",
+    "max-age",
+    "partitioned",
+    "path",
+    "samesite",
+    "secure",
+    "version",
+}
+_COOKIE_REQUIRED_NAMES = {"ttwid", "odin_tt"}
+_COOKIE_INPUT_ERROR = (
+    "Cookie 内容不完整。请在开发者工具的 Network 中打开一个 douyin.com 请求，"
+    "复制 Request Headers 里的完整 cookie: 内容；"
+    "不要复制 Response Headers 里的 set-cookie，也不要只复制单个 odin_tt"
+)
 
 
 class HarvestError(RuntimeError):
@@ -37,9 +55,20 @@ def _cookie_dict(raw: str) -> dict[str, str]:
         if "=" not in part:
             continue
         key, value = part.strip().split("=", 1)
-        if key and not any(ch.isspace() for ch in key):
+        if (
+            key
+            and not any(ch.isspace() for ch in key)
+            and key.lower() not in _COOKIE_ATTRIBUTE_NAMES
+        ):
             parsed[key] = value
     return parsed
+
+
+def _cookie_validation_error(cookies: dict[str, str]) -> str:
+    names = {key.lower() for key in cookies}
+    if len(cookies) < 3 or not _COOKIE_REQUIRED_NAMES.issubset(names):
+        return _COOKIE_INPUT_ERROR
+    return ""
 
 
 def _first_url(value: Any) -> str | None:
@@ -76,17 +105,22 @@ class DouyinHarvester:
 
     def save_cookie(self, raw: str) -> None:
         cookies = _cookie_dict(raw)
-        required = {"ttwid", "odin_tt", "passport_csrf_token"}
-        if len(cookies) < 3 or not required.intersection(cookies):
-            raise ValueError("Cookie 内容不完整，请从已登录的 douyin.com 请求中复制完整 Cookie")
+        error = _cookie_validation_error(cookies)
+        if error:
+            raise ValueError(error)
         self.settings.cookie_path.parent.mkdir(parents=True, exist_ok=True)
-        self.settings.cookie_path.write_text(raw.strip(), encoding="utf-8")
+        normalized = "; ".join(f"{key}={value}" for key, value in cookies.items())
+        self.settings.cookie_path.write_text(normalized, encoding="utf-8")
         os.chmod(self.settings.cookie_path, 0o600)
 
     def load_cookies(self) -> dict[str, str]:
         if not self.has_cookie():
             raise HarvestError("尚未配置抖音 Cookie；请先在系统设置中保存登录 Cookie")
-        return _cookie_dict(self.settings.cookie_path.read_text(encoding="utf-8"))
+        cookies = _cookie_dict(self.settings.cookie_path.read_text(encoding="utf-8"))
+        error = _cookie_validation_error(cookies)
+        if error:
+            raise HarvestError(f"已保存的{error}")
+        return cookies
 
     @staticmethod
     def validate_url(url: str) -> str:
@@ -439,10 +473,17 @@ class DouyinHarvester:
         return "; ".join(f"{key}={value}" for key, value in self.load_cookies().items())
 
     def diagnostic(self) -> dict[str, Any]:
+        cookies = (
+            _cookie_dict(self.settings.cookie_path.read_text(encoding="utf-8"))
+            if self.has_cookie()
+            else {}
+        )
+        error = _cookie_validation_error(cookies) if cookies else "尚未保存 Cookie"
         return {
-            "configured": self.has_cookie(),
+            "configured": not error,
             "path": str(self.settings.cookie_path),
-            "cookie_count": len(self.load_cookies()) if self.has_cookie() else 0,
+            "cookie_count": len(cookies),
+            "error": error,
         }
 
     @staticmethod

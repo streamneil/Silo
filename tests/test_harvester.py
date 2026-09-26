@@ -29,6 +29,38 @@ def test_validate_url_ignores_non_douyin_links_and_trailing_punctuation():
     )
 
 
+def test_save_cookie_rejects_set_cookie_attributes_without_overwriting_valid_cookie(
+    tmp_path,
+):
+    harvester = DouyinHarvester(Settings(data_dir=tmp_path))
+    valid = "ttwid=one; odin_tt=two; passport_csrf_token=three"
+    harvester.save_cookie(valid)
+
+    with pytest.raises(ValueError, match="Request Headers"):
+        harvester.save_cookie(
+            "odin_tt=partial; Max-Age=31536000; Domain=.douyin.com; Path=/"
+        )
+
+    assert harvester.settings.cookie_path.read_text(encoding="utf-8") == valid
+
+
+def test_invalid_saved_cookie_is_reported_without_breaking_diagnostics(tmp_path):
+    harvester = DouyinHarvester(Settings(data_dir=tmp_path))
+    harvester.settings.cookie_path.parent.mkdir(parents=True)
+    harvester.settings.cookie_path.write_text(
+        "odin_tt=partial; Max-Age=31536000; Domain=.douyin.com; Path=/",
+        encoding="utf-8",
+    )
+
+    diagnostic = harvester.diagnostic()
+
+    assert diagnostic["configured"] is False
+    assert diagnostic["cookie_count"] == 1
+    assert "Response Headers" in diagnostic["error"]
+    with pytest.raises(HarvestError, match="Request Headers"):
+        harvester.load_cookies()
+
+
 class FakeBrowserClient:
     async def collect_user_post_ids_via_browser(self, *args, **kwargs):
         return ["1", "2", "3"]
