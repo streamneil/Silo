@@ -244,6 +244,7 @@ class DouyinHarvester:
                         seen,
                         expected_count,
                         timezone=self.settings.timezone,
+                        expected_nickname=str(profile.get("nickname") or ""),
                     )
                     browser_recovered = True
                     if not items:
@@ -280,6 +281,7 @@ class DouyinHarvester:
                             seen,
                             expected_count,
                             timezone=self.settings.timezone,
+                            expected_nickname=str(profile.get("nickname") or ""),
                         )
                     if len(items) < expected_count:
                         complete = False
@@ -404,6 +406,7 @@ class DouyinHarvester:
         seen: set[str],
         expected_count: int,
         timezone: str = "Asia/Shanghai",
+        expected_nickname: str = "",
     ) -> list[dict[str, Any]]:
         logger.warning(
             "API pagination incomplete, starting browser recovery: expected=%s api_items=%s",
@@ -437,6 +440,7 @@ class DouyinHarvester:
                 sec_uid,
                 unresolved_ids,
                 timezone,
+                expected_nickname,
             )
         recovered = 0
         detail_failed = 0
@@ -467,6 +471,7 @@ class DouyinHarvester:
                 sec_uid,
                 failed_ids,
                 timezone,
+                expected_nickname,
             )
             page_items.update(fallback_items)
             for aweme_id in failed_ids:
@@ -500,6 +505,11 @@ class DouyinHarvester:
         title = re.sub(r"\s*-\s*抖音\s*$", "", title).strip()
         description = str(data.get("description") or "").strip()
         body_text = str(data.get("body_text") or "")
+        author_matches = re.findall(
+            r"\s-\s*([^\n]+?)于\s*\d{8}\s*发布在抖音",
+            description,
+        )
+        author_nickname = author_matches[-1].strip() if author_matches else ""
 
         published_at = 0
         match = re.search(
@@ -527,7 +537,7 @@ class DouyinHarvester:
             duration_ms = 0
         return {
             "aweme_id": str(aweme_id),
-            "author": {"sec_uid": sec_uid},
+            "author": {"sec_uid": sec_uid, "nickname": author_nickname},
             "desc": title or description or "无标题",
             "create_time": published_at,
             "duration": duration_ms,
@@ -540,11 +550,21 @@ class DouyinHarvester:
         }
 
     @staticmethod
+    def _browser_item_matches_creator(
+        item: dict[str, Any], expected_nickname: str
+    ) -> bool:
+        if not expected_nickname:
+            return True
+        actual_nickname = str((item.get("author") or {}).get("nickname") or "")
+        return actual_nickname == expected_nickname
+
+    @staticmethod
     async def _recover_video_pages_with_browser(
         client: Any,
         sec_uid: str,
         aweme_ids: list[str],
         timezone: str,
+        expected_nickname: str = "",
     ) -> dict[str, dict[str, Any]]:
         """Read video metadata from rendered pages when Douyin's JSON APIs return 403."""
         if not aweme_ids:
@@ -611,6 +631,18 @@ class DouyinHarvester:
                         item = DouyinHarvester._browser_page_item(
                             aweme_id, sec_uid, data, timezone
                         )
+                        actual_nickname = str((item.get("author") or {}).get("nickname") or "")
+                        if not DouyinHarvester._browser_item_matches_creator(
+                            item, expected_nickname
+                        ):
+                            logger.warning(
+                                "Skip browser candidate from another creator: "
+                                "aweme_id=%s expected_nickname=%r actual_nickname=%r",
+                                aweme_id,
+                                expected_nickname,
+                                actual_nickname or "unknown",
+                            )
+                            continue
                         if _first_url((item.get("video") or {}).get("play_addr")):
                             recovered[aweme_id] = item
                     except Exception as exc:

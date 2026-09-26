@@ -104,6 +104,7 @@ def test_browser_page_data_builds_video_metadata():
 
     assert item["desc"] == "浏览器恢复的标题"
     assert item["duration"] == 12500
+    assert item["author"]["nickname"] == "作者"
     assert item["video"]["play_addr"]["url_list"] == [
         "https://example.com/video.mp4"
     ]
@@ -112,6 +113,8 @@ def test_browser_page_data_builds_video_metadata():
     ]
     expected = datetime(2026, 9, 25, 13, 45, tzinfo=ZoneInfo("Asia/Shanghai"))
     assert item["create_time"] == int(expected.timestamp())
+    assert DouyinHarvester._browser_item_matches_creator(item, "作者") is True
+    assert DouyinHarvester._browser_item_matches_creator(item, "另一位博主") is False
 
 
 class FakeMonthClient:
