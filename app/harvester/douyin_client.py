@@ -426,6 +426,46 @@ class DouyinHarvester:
             wait_timeout_seconds=900,
         )
         browser_items = client.pop_browser_post_aweme_items()
+        matching_browser_items = {
+            str(aweme_id): item
+            for aweme_id, item in browser_items.items()
+            if str((item.get("author") or {}).get("sec_uid") or "") == sec_uid
+        }
+        if not matching_browser_items:
+            logger.warning(
+                "Headless creator page returned no verified post metadata; "
+                "retrying with a headed browser"
+            )
+            try:
+                headed_ids = await client.collect_user_post_ids_via_browser(
+                    sec_uid,
+                    expected_count=0,
+                    headless=False,
+                    max_scrolls=360,
+                    idle_rounds=12,
+                    wait_timeout_seconds=900,
+                )
+                headed_items = client.pop_browser_post_aweme_items()
+                headed_matching_items = {
+                    str(aweme_id): item
+                    for aweme_id, item in headed_items.items()
+                    if str((item.get("author") or {}).get("sec_uid") or "")
+                    == sec_uid
+                }
+                if headed_matching_items:
+                    browser_ids = [
+                        str(aweme_id)
+                        for aweme_id in headed_ids
+                        if str(aweme_id) in headed_matching_items
+                    ]
+                    browser_items = headed_matching_items
+                    matching_browser_items = headed_matching_items
+            except Exception as exc:
+                logger.warning(
+                    "Headed browser recovery unavailable; continuing with "
+                    "headless page candidates: %s",
+                    exc,
+                )
         unresolved_ids = [
             str(aweme_id)
             for aweme_id in browser_ids

@@ -87,6 +87,57 @@ async def test_browser_recovery_merges_metadata_and_details():
     assert [item["aweme_id"] for item in recovered] == ["1", "2", "3"]
 
 
+class HeadlessBlockedBrowserClient:
+    def __init__(self):
+        self.calls = []
+        self.items = {}
+
+    async def collect_user_post_ids_via_browser(self, *args, **kwargs):
+        self.calls.append(kwargs["headless"])
+        if kwargs["headless"]:
+            self.items = {}
+            return ["recommendation"]
+        self.items = {
+            "real": {"aweme_id": "real", "author": {"sec_uid": "creator"}}
+        }
+        return ["real"]
+
+    def pop_browser_post_aweme_items(self):
+        items = self.items
+        self.items = {}
+        return items
+
+    async def get_video_detail(self, _aweme_id, suppress_error=False):
+        return None
+
+
+@pytest.mark.asyncio
+async def test_browser_recovery_retries_headed_when_headless_profile_is_blocked(
+    monkeypatch,
+):
+    async def no_page_items(*_args, **_kwargs):
+        return {}
+
+    monkeypatch.setattr(
+        DouyinHarvester,
+        "_recover_video_pages_with_browser",
+        staticmethod(no_page_items),
+    )
+    client = HeadlessBlockedBrowserClient()
+
+    recovered = await DouyinHarvester._recover_with_browser(
+        client,
+        "creator",
+        [],
+        set(),
+        1,
+        expected_nickname="测试博主",
+    )
+
+    assert client.calls == [True, False]
+    assert [item["aweme_id"] for item in recovered] == ["real"]
+
+
 def test_browser_page_data_builds_video_metadata():
     item = DouyinHarvester._browser_page_item(
         "123",
