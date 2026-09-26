@@ -1,5 +1,7 @@
 import sys
 import types
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -85,6 +87,33 @@ async def test_browser_recovery_merges_metadata_and_details():
     assert [item["aweme_id"] for item in recovered] == ["1", "2", "3"]
 
 
+def test_browser_page_data_builds_video_metadata():
+    item = DouyinHarvester._browser_page_item(
+        "123",
+        "creator",
+        {
+            "title": "浏览器恢复的标题 - 抖音",
+            "description": "浏览器恢复的标题 - 作者于20260925发布在抖音",
+            "body_text": "发布时间：2026-09-25 13:45",
+            "video_url": "https://example.com/video.mp4",
+            "cover_url": "https://example.com/cover.jpg",
+            "duration_seconds": 12.5,
+        },
+        "Asia/Shanghai",
+    )
+
+    assert item["desc"] == "浏览器恢复的标题"
+    assert item["duration"] == 12500
+    assert item["video"]["play_addr"]["url_list"] == [
+        "https://example.com/video.mp4"
+    ]
+    assert item["video"]["cover"]["url_list"] == [
+        "https://example.com/cover.jpg"
+    ]
+    expected = datetime(2026, 9, 25, 13, 45, tzinfo=ZoneInfo("Asia/Shanghai"))
+    assert item["create_time"] == int(expected.timestamp())
+
+
 class FakeMonthClient:
     def __init__(self):
         self.params = None
@@ -157,9 +186,71 @@ async def test_quick_harvest_rejects_empty_first_page_for_nonempty_creator(
     )
     harvester = DouyinHarvester(Settings(data_dir=tmp_path))
     harvester.save_cookie("ttwid=test; odin_tt=test; passport_csrf_token=test")
+    monkeypatch.setattr(
+        harvester,
+        "_recover_with_browser",
+        lambda *_args, **_kwargs: _async_result([]),
+    )
 
     with pytest.raises(HarvestError, match="Cookie"):
         await harvester.harvest(
             "https://www.douyin.com/user/creator",
             max_videos=60,
         )
+
+
+async def _async_result(value):
+    return value
+
+
+@pytest.mark.asyncio
+async def test_quick_harvest_recovers_empty_api_page_through_browser(
+    tmp_path, monkeypatch
+):
+    class EmptyPostClient:
+        def __init__(self, _cookies):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def get_user_info(self, _sec_uid):
+            return {"nickname": "测试博主", "aweme_count": 1}
+
+        async def get_user_post(self, _sec_uid, _cursor, _count):
+            return {}
+
+    class FakeURLParser:
+        @staticmethod
+        def parse(_url):
+            return {"type": "user", "sec_uid": "creator"}
+
+    monkeypatch.setitem(
+        sys.modules,
+        "core",
+        types.SimpleNamespace(DouyinAPIClient=EmptyPostClient, URLParser=FakeURLParser),
+    )
+    harvester = DouyinHarvester(Settings(data_dir=tmp_path))
+    harvester.save_cookie("ttwid=test; odin_tt=test; passport_csrf_token=test")
+    recovered_item = {
+        "aweme_id": "new-video",
+        "author": {"sec_uid": "creator"},
+        "desc": "浏览器恢复作品",
+        "create_time": 1,
+        "video": {"play_addr": {"url_list": ["https://example.com/video.mp4"]}},
+    }
+
+    async def recover(*_args, **_kwargs):
+        return [recovered_item]
+
+    monkeypatch.setattr(harvester, "_recover_with_browser", recover)
+
+    result = await harvester.harvest(
+        "https://www.douyin.com/user/creator",
+        max_videos=60,
+    )
+
+    assert [video["aweme_id"] for video in result.videos] == ["new-video"]

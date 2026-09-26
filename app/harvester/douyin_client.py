@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 from urllib.parse import urlparse
+from zoneinfo import ZoneInfo
 
 from app.config import Settings
 
@@ -234,12 +235,23 @@ class DouyinHarvester:
                     seen_cursors.add(cursor)
                     cursor = next_cursor
 
+                browser_recovered = False
                 if expected_count > 0 and not items:
-                    raise HarvestError(
-                        "抖音主页可以读取，但作品列表返回为空。"
-                        "登录 Cookie 可能已过期或触发了平台风控；"
-                        "请在已登录的抖音网页版重新获取完整 Cookie，保存后再重试"
+                    items = await self._recover_with_browser(
+                        client,
+                        sec_uid,
+                        items,
+                        seen,
+                        expected_count,
+                        timezone=self.settings.timezone,
                     )
+                    browser_recovered = True
+                    if not items:
+                        raise HarvestError(
+                            "抖音作品接口被平台拒绝，浏览器兜底也没有读取到作品。"
+                            "请先在抖音网页版确认该主页和视频能正常打开；"
+                            "如出现验证码，请完成验证后更新 Cookie 再重试"
+                        )
 
                 if not max_videos and expected_count > len(items) and time_windows:
                     items = await self._recover_older_months(
@@ -260,9 +272,14 @@ class DouyinHarvester:
                             f"抖音只公开返回了前 {len(items)} 条，当前 Cookie 未被识别为登录状态；"
                             "请在已登录抖音网页版的浏览器中更新 Cookie 后重试"
                         )
-                    else:
+                    elif not browser_recovered:
                         items = await self._recover_with_browser(
-                            client, sec_uid, items, seen, expected_count
+                            client,
+                            sec_uid,
+                            items,
+                            seen,
+                            expected_count,
+                            timezone=self.settings.timezone,
                         )
                     if len(items) < expected_count:
                         complete = False
@@ -386,6 +403,7 @@ class DouyinHarvester:
         items: list[dict[str, Any]],
         seen: set[str],
         expected_count: int,
+        timezone: str = "Asia/Shanghai",
     ) -> list[dict[str, Any]]:
         logger.warning(
             "API pagination incomplete, starting browser recovery: expected=%s api_items=%s",
@@ -405,19 +423,36 @@ class DouyinHarvester:
             wait_timeout_seconds=900,
         )
         browser_items = client.pop_browser_post_aweme_items()
+        unresolved_ids = [
+            str(aweme_id)
+            for aweme_id in browser_ids
+            if str(aweme_id)
+            and str(aweme_id) not in seen
+            and str(aweme_id) not in browser_items
+        ]
+        page_items = {}
+        if not items:
+            page_items = await DouyinHarvester._recover_video_pages_with_browser(
+                client,
+                sec_uid,
+                unresolved_ids,
+                timezone,
+            )
         recovered = 0
         detail_failed = 0
+        failed_ids: list[str] = []
         for index, aweme_id in enumerate(browser_ids, start=1):
             aweme_id = str(aweme_id)
             if not aweme_id or aweme_id in seen:
                 continue
-            item = browser_items.get(aweme_id)
+            item = browser_items.get(aweme_id) or page_items.get(aweme_id)
             if not item:
                 if index > 1:
                     await asyncio.sleep(0.2)
                 item = await client.get_video_detail(aweme_id, suppress_error=True)
             if not item:
                 detail_failed += 1
+                failed_ids.append(aweme_id)
                 continue
             author = item.get("author") or {}
             item_sec_uid = str(author.get("sec_uid") or "")
@@ -426,15 +461,175 @@ class DouyinHarvester:
             seen.add(aweme_id)
             items.append(item)
             recovered += 1
+        if failed_ids:
+            fallback_items = await DouyinHarvester._recover_video_pages_with_browser(
+                client,
+                sec_uid,
+                failed_ids,
+                timezone,
+            )
+            page_items.update(fallback_items)
+            for aweme_id in failed_ids:
+                item = fallback_items.get(aweme_id)
+                if not item or aweme_id in seen:
+                    continue
+                seen.add(aweme_id)
+                items.append(item)
+                recovered += 1
         logger.warning(
-            "Browser recovery complete: ids=%s metadata=%s recovered=%s detail_failed=%s total=%s",
+            "Browser recovery complete: ids=%s api_metadata=%s page_metadata=%s "
+            "recovered=%s detail_failed=%s total=%s",
             len(browser_ids),
             len(browser_items),
+            len(page_items),
             recovered,
             detail_failed,
             len(items),
         )
         return items
+
+    @staticmethod
+    def _browser_page_item(
+        aweme_id: str,
+        sec_uid: str,
+        data: dict[str, Any],
+        timezone: str,
+    ) -> dict[str, Any]:
+        """Convert metadata visible on a Douyin video page to an API-shaped item."""
+        title = str(data.get("title") or "").strip()
+        title = re.sub(r"\s*-\s*抖音\s*$", "", title).strip()
+        description = str(data.get("description") or "").strip()
+        body_text = str(data.get("body_text") or "")
+
+        published_at = 0
+        match = re.search(
+            r"发布时间[：:]\s*(\d{4})-(\d{1,2})-(\d{1,2})\s+(\d{1,2}):(\d{2})",
+            body_text,
+        )
+        if match:
+            parts = [int(value) for value in match.groups()]
+            published_at = int(
+                datetime(*parts, tzinfo=ZoneInfo(timezone)).timestamp()
+            )
+        else:
+            compact_date = re.search(r"于\s*(\d{4})(\d{2})(\d{2})\s*发布", description)
+            if compact_date:
+                year, month, day = [int(value) for value in compact_date.groups()]
+                published_at = int(
+                    datetime(year, month, day, tzinfo=ZoneInfo(timezone)).timestamp()
+                )
+
+        video_url = str(data.get("video_url") or "").strip()
+        cover_url = str(data.get("cover_url") or "").strip()
+        try:
+            duration_ms = max(0, int(float(data.get("duration_seconds") or 0) * 1000))
+        except (TypeError, ValueError):
+            duration_ms = 0
+        return {
+            "aweme_id": str(aweme_id),
+            "author": {"sec_uid": sec_uid},
+            "desc": title or description or "无标题",
+            "create_time": published_at,
+            "duration": duration_ms,
+            "statistics": {},
+            "video": {
+                "duration": duration_ms,
+                "play_addr": {"url_list": [video_url] if video_url.startswith("http") else []},
+                "cover": {"url_list": [cover_url] if cover_url.startswith("http") else []},
+            },
+        }
+
+    @staticmethod
+    async def _recover_video_pages_with_browser(
+        client: Any,
+        sec_uid: str,
+        aweme_ids: list[str],
+        timezone: str,
+    ) -> dict[str, dict[str, Any]]:
+        """Read video metadata from rendered pages when Douyin's JSON APIs return 403."""
+        if not aweme_ids:
+            return {}
+        try:
+            from playwright.async_api import async_playwright
+        except Exception as exc:  # pragma: no cover - optional runtime guard
+            logger.warning("Playwright unavailable for video-page recovery: %s", exc)
+            return {}
+
+        recovered: dict[str, dict[str, Any]] = {}
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch(
+                headless=True,
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--disable-dev-shm-usage",
+                    "--no-sandbox",
+                ],
+            )
+            headers = getattr(client, "headers", {})
+            context = await browser.new_context(
+                user_agent=headers.get("User-Agent", ""),
+                locale="zh-CN",
+                viewport={"width": 1600, "height": 900},
+            )
+            cookies = client._browser_cookie_payload()  # noqa: SLF001
+            if cookies:
+                await context.add_cookies(cookies)
+            try:
+                for aweme_id in aweme_ids:
+                    page = await context.new_page()
+                    try:
+                        await page.goto(
+                            f"https://www.douyin.com/video/{aweme_id}",
+                            wait_until="domcontentloaded",
+                            timeout=90_000,
+                        )
+                        try:
+                            await page.locator("video").first.wait_for(
+                                state="attached", timeout=15_000
+                            )
+                            await page.wait_for_timeout(1_000)
+                        except Exception:
+                            pass
+                        data = await page.evaluate(
+                            """() => {
+                                const video = document.querySelector('video');
+                                const meta = (name) =>
+                                    document.querySelector(`meta[name="${name}"]`)?.content || '';
+                                const source = video?.querySelector('source');
+                                return {
+                                    title: document.title || '',
+                                    description: meta('description'),
+                                    body_text: document.body?.innerText || '',
+                                    video_url: video?.currentSrc || video?.src || source?.src || '',
+                                    cover_url: meta('lark:url:video_cover_image_url') ||
+                                        meta('og:image'),
+                                    duration_seconds: Number.isFinite(video?.duration)
+                                        ? video.duration : 0,
+                                };
+                            }"""
+                        )
+                        item = DouyinHarvester._browser_page_item(
+                            aweme_id, sec_uid, data, timezone
+                        )
+                        if _first_url((item.get("video") or {}).get("play_addr")):
+                            recovered[aweme_id] = item
+                    except Exception as exc:
+                        logger.warning(
+                            "Browser video-page recovery failed for aweme_id=%s: %s",
+                            aweme_id,
+                            exc,
+                        )
+                    finally:
+                        await page.close()
+            finally:
+                await context.close()
+                await browser.close()
+        logger.warning(
+            "Browser video-page recovery complete: requested=%s recovered=%s",
+            len(aweme_ids),
+            len(recovered),
+        )
+        return recovered
 
     @staticmethod
     def _normalize_creator(
