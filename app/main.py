@@ -4,6 +4,7 @@ import csv
 import io
 import json
 import logging
+import re
 import zipfile
 from contextlib import asynccontextmanager
 from datetime import datetime, time
@@ -32,6 +33,11 @@ class RunRequest(BaseModel):
 
 class CookieRequest(BaseModel):
     cookie: str = Field(min_length=20, max_length=100000)
+
+
+def _safe_download_name_part(value: Any, fallback: str) -> str:
+    cleaned = re.sub(r'[\x00-\x1f\x7f/\\:*?"<>|]+', "_", str(value or ""))
+    return cleaned.strip(" .") or fallback
 
 
 def build_app(settings: Settings | None = None, pipeline: Pipeline | None = None) -> FastAPI:
@@ -361,7 +367,16 @@ def build_app(settings: Settings | None = None, pipeline: Pipeline | None = None
         path = Path(version["export_path"])
         if not path.exists():
             raise HTTPException(status_code=404, detail="交付包文件不存在")
-        return FileResponse(path, filename=path.name, media_type="application/zip")
+        creator = db.one(
+            "SELECT nickname FROM creators WHERE creator_id=?",
+            (version["creator_id"],),
+        )
+        nickname = _safe_download_name_part(
+            (creator or {}).get("nickname"), "博主"
+        )
+        version_label = _safe_download_name_part(version["version_label"], "版本")
+        filename = f"{nickname}-{version_label}.zip"
+        return FileResponse(path, filename=filename, media_type="application/zip")
 
     @app.get("/api/versions/{version_id}/report")
     def report(version_id: str) -> dict[str, str]:

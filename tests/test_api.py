@@ -1,6 +1,7 @@
 import io
 import json
 import zipfile
+from urllib.parse import unquote
 
 from fastapi.testclient import TestClient
 
@@ -165,6 +166,7 @@ def test_api_serves_version_report_and_skill(tmp_path):
             "2026-09-07T10:00:00+08:00",
         ),
     )
+    (tmp_path / "export.zip").write_bytes(b"demo archive")
     db.execute(
         """INSERT INTO creator_profiles(
             profile_id,creator_id,corpus_version_id,model,prompt_version,sample_count,
@@ -190,3 +192,9 @@ def test_api_serves_version_report_and_skill(tmp_path):
         skl = client.get(f"/api/versions/{version_id}/skill")
         assert skl.status_code == 200
         assert "name: demo-style" in skl.json()["markdown"]
+
+        download = client.get(f"/api/versions/{version_id}/download")
+        assert download.status_code == 200
+        disposition = download.headers["content-disposition"]
+        encoded_name = disposition.split("filename*=utf-8''", 1)[1]
+        assert unquote(encoded_name) == "测试博主-1.0.0+20260907.zip"
