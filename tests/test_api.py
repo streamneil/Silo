@@ -104,6 +104,7 @@ def test_console_contains_artifact_markdown_preview_components(tmp_path):
         assert "artifact-show-raw" in html
         assert "artifact-copy" in html
         assert "markdown-body" in html
+        assert "download?download=creator-version-v1" in html
 
 
 def test_console_explains_cookie_setup_and_reports_refresh_results(tmp_path):
@@ -198,3 +199,5 @@ def test_api_serves_version_report_and_skill(tmp_path):
         disposition = download.headers["content-disposition"]
         encoded_name = disposition.split("filename*=utf-8''", 1)[1]
         assert unquote(encoded_name) == "测试博主-1.0.0+20260907.zip"
+        assert download.headers["cache-control"] == "no-store, max-age=0"
+        assert download.headers["pragma"] == "no-cache"

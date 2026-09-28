@@ -376,7 +376,15 @@ def build_app(settings: Settings | None = None, pipeline: Pipeline | None = None
         )
         version_label = _safe_download_name_part(version["version_label"], "版本")
         filename = f"{nickname}-{version_label}.zip"
-        return FileResponse(path, filename=filename, media_type="application/zip")
+        return FileResponse(
+            path,
+            filename=filename,
+            media_type="application/zip",
+            headers={
+                "Cache-Control": "no-store, max-age=0",
+                "Pragma": "no-cache",
+            },
+        )
 
     @app.get("/api/versions/{version_id}/report")
     def report(version_id: str) -> dict[str, str]:
